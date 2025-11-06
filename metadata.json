@@ -1,0 +1,5 @@
+{
+  "name": "Boyama Kitabım",
+  "description": "An interactive web application that allows users to create personalized coloring books for children based on their name, chosen theme, and number of pages, and then download the book as a printable PDF.",
+  "requestFramePermissions": []
+}
