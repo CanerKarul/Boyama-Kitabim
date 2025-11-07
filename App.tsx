@@ -11,6 +11,11 @@ const App: React.FC = () => {
   const [language, setLanguage] = useState('tr'); // 'tr' or 'en'
 
   useEffect(() => {
+    const browserLang = navigator.language.split('-')[0];
+    const initialLang = browserLang === 'tr' ? 'tr' : 'en';
+    setLanguage(initialLang);
+    document.documentElement.lang = initialLang;
+    
     // Check for dark mode preference
     if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
       document.documentElement.classList.add('dark');
@@ -18,22 +23,25 @@ const App: React.FC = () => {
       document.documentElement.classList.remove('dark');
     }
   }, []);
+  
+  const handleLanguageChange = (lang: string) => {
+      setLanguage(lang);
+      document.documentElement.lang = lang;
+  };
 
   const handleStartGeneration = useCallback((data: GenerationData) => {
     setGenerationData(data);
     setScreen(AppScreen.Loading);
   }, []);
 
-  const handleGenerationComplete = useCallback((pages: ColoringPage[], lang: string) => {
+  const handleGenerationComplete = useCallback((pages: ColoringPage[]) => {
     setGeneratedPages(pages);
-    setLanguage(lang);
     setScreen(AppScreen.Preview);
   }, []);
 
   const handleEdit = useCallback(() => {
     setGenerationData(null);
     setGeneratedPages([]);
-    setLanguage('tr'); // Reset to default on going home
     setScreen(AppScreen.Home);
   }, []);
 
@@ -53,6 +61,7 @@ const App: React.FC = () => {
             age={generationData?.age || 6}
             canWrite={generationData?.canWrite || false}
             onComplete={handleGenerationComplete}
+            language={language}
           />
         );
       case AppScreen.Preview:
@@ -64,11 +73,12 @@ const App: React.FC = () => {
             onEdit={handleEdit}
             onRegenerate={handleRegenerate}
             language={language}
+            onLanguageChange={handleLanguageChange}
           />
         );
       case AppScreen.Home:
       default:
-        return <HomeScreen onGenerate={handleStartGeneration} />;
+        return <HomeScreen onGenerate={handleStartGeneration} language={language} onLanguageChange={handleLanguageChange} />;
     }
   };
 

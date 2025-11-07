@@ -14,6 +14,7 @@ interface PreviewScreenProps {
   onEdit: () => void;
   onRegenerate: () => void;
   language: string;
+  onLanguageChange: (lang: string) => void;
 }
 
 const uiStrings = {
@@ -39,8 +40,34 @@ const uiStrings = {
   }
 };
 
+const LanguageSwitcher: React.FC<{ language: string; onLanguageChange: (lang: string) => void; }> = ({ language, onLanguageChange }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    
+    return (
+        <div className="relative">
+            <button onClick={() => setIsOpen(!isOpen)} className="flex items-center justify-center h-10 w-10 rounded-full bg-slate-200/80 dark:bg-slate-800/80 text-text-light dark:text-text-dark transition-colors hover:bg-slate-300/80 dark:hover:bg-slate-700/80">
+                 <img src={`https://flagcdn.com/w20/${language === 'tr' ? 'tr' : 'gb'}.png`} alt={language} className="w-5 h-auto rounded-sm" />
+            </button>
+            {isOpen && (
+                <div className="absolute right-0 mt-2 w-32 origin-top-right rounded-md bg-white dark:bg-slate-800 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none z-10">
+                    <div className="py-1">
+                        <button onClick={() => { onLanguageChange('tr'); setIsOpen(false); }} className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700">
+                             <img src="https://flagcdn.com/w20/tr.png" alt="Turkish" className="w-5 h-auto rounded-sm" />
+                             <span>Türkçe</span>
+                        </button>
+                        <button onClick={() => { onLanguageChange('en'); setIsOpen(false); }} className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700">
+                           <img src="https://flagcdn.com/w20/gb.png" alt="English" className="w-5 h-auto rounded-sm" />
+                           <span>English</span>
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
 
-const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdit, onRegenerate, language }) => {
+
+const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdit, onRegenerate, language, onLanguageChange }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const s = uiStrings[language as keyof typeof uiStrings] || uiStrings.tr;
 
@@ -101,11 +128,16 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
             if (page.colorPalette && page.colorPalette.length > 0) {
                 const palette = page.colorPalette;
                 const swatchSize = 8;
-                const swatchSpacing = 12; // Increased spacing for better readability
-                const totalPaletteWidth = (palette.length * (swatchSize + swatchSpacing)) - swatchSpacing;
-                const startX = (A4_WIDTH - totalPaletteWidth) / 2;
+                const itemGap = 8;
                 const startY = A4_HEIGHT - 25;
-
+                
+                doc.setFontSize(8);
+                
+                const itemWidths = palette.map(color => Math.max(swatchSize, doc.getTextWidth(color.name)));
+                const totalPaletteWidth = itemWidths.reduce((sum, width) => sum + width, 0) + (palette.length - 1) * itemGap;
+                
+                let startX = (A4_WIDTH - totalPaletteWidth) / 2;
+                
                 doc.setFontSize(9);
                 doc.setTextColor(100, 100, 100);
                 doc.setFont('helvetica', 'normal');
@@ -113,16 +145,19 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
                 const labelWidth = doc.getTextWidth(labelText);
                 doc.text(labelText, startX - labelWidth - 5 > 0 ? startX - labelWidth - 5 : 10, startY + swatchSize / 2 + 1);
 
+                let currentX = startX;
                 palette.forEach((color, index) => {
-                    const itemWidth = swatchSize + swatchSpacing;
-                    const swatchX = startX + index * itemWidth;
+                    const currentItemWidth = itemWidths[index];
+                    const swatchXOffset = (currentItemWidth - swatchSize) / 2;
+                    
                     doc.setFillColor(color.hex);
-                    doc.rect(swatchX, startY, swatchSize, swatchSize, 'F');
+                    doc.rect(currentX + swatchXOffset, startY, swatchSize, swatchSize, 'F');
 
                     doc.setFontSize(8);
                     doc.setTextColor(50, 50, 50);
-                    // Use maxWidth to prevent text from overlapping
-                    doc.text(color.name, swatchX + swatchSize / 2, startY + swatchSize + 5, { align: 'center', maxWidth: itemWidth - 2 });
+                    doc.text(color.name, currentX + currentItemWidth / 2, startY + swatchSize + 5, { align: 'center' });
+                    
+                    currentX += currentItemWidth + itemGap;
                 });
             }
 
@@ -162,6 +197,7 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
             <button onClick={toggleDarkMode} aria-label="Yüksek kontrast modunu aç/kapat" className="h-10 w-10 inline-flex items-center justify-center rounded-full text-slate-500 dark:text-slate-400 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
               <span className="material-symbols-outlined text-xl">contrast</span>
             </button>
+            <LanguageSwitcher language={language} onLanguageChange={onLanguageChange} />
           </div>
         </div>
       </header>
@@ -186,13 +222,13 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
                     <div className="relative w-full aspect-[3/4] overflow-hidden rounded-xl border-4 border-accent shadow-lg">
                       <div className="absolute inset-0 bg-cover bg-center bg-no-repeat transition-transform duration-300 ease-in-out group-hover/page:scale-110" style={{ backgroundImage: `url("${coverPage.imageUrl}")` }}></div>
                       <div className="absolute inset-0 flex items-center justify-center bg-black/30 p-4 transition-opacity duration-300 ease-in-out group-hover/page:opacity-0">
-                        <h2 className="text-center font-display text-3xl font-bold text-white">{coverPage.description}</h2>
+                        <h2 className="text-center font-display text-3xl font-bold text-white">{theme}</h2>
                       </div>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <div>
                         <p className="font-display text-lg font-bold leading-normal text-text-light dark:text-text-dark">{coverPage.title}</p>
-                        <p className="font-body text-sm font-normal leading-normal text-slate-500 dark:text-slate-400 truncate">{coverPage.description}</p>
+                        <p className="font-body text-sm font-normal leading-normal text-slate-500 dark:text-slate-400 truncate">{name}'s Adventure</p>
                       </div>
                     </div>
                   </div>

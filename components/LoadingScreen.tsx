@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ColoringPage, ColorInfo } from '../types';
-import { GoogleGenAI, Modality, Type } from '@google/genai';
+import { GoogleGenAI, Modality, Type, GenerateContentResponse } from '@google/genai';
 
 interface LoadingScreenProps {
   name: string;
@@ -8,72 +8,126 @@ interface LoadingScreenProps {
   theme: string;
   age: number;
   canWrite: boolean;
-  onComplete: (pages: ColoringPage[], lang: string) => void;
+  onComplete: (pages: ColoringPage[]) => void;
+  language: string;
 }
 
 const uiStrings = {
   tr: {
     coverTitle: "Çocuklara Özel Eğlenceli Boyama Kitabı",
     coverSubtitle: "Senin İsteğinle şekilleniyor",
-    writingPrompt: "Resimde ne görüyorsun?",
+    writingPrompt: "Resimde ne goruyorsun? (Kisaca anlat)",
     coverPageTitle: "Kapak Sayfası",
     pageTitle: "Sayfa",
+    generatingIdeas: "Fikirler oluşturuluyor...",
+    designingCover: "Kapak sayfası tasarlanıyor...",
+    drawingPage: (idea: string) => `"${idea}" sayfası çiziliyor...`,
+    pickingColors: (idea: string) => `"${idea}" için renkler seçiliyor...`,
+    generatingTitle: (name: string, theme: string) => `${name} için ${theme} temalı boyama kitabı oluşturuluyor...`,
+    stepLabel: "Üretim",
+    rateLimitError: "Boyama kitabı fabrikası şu anda çok meşgul! Lütfen birkaç dakika sonra tekrar deneyin.",
+    internalError: "Yapay zeka modeli geçici bir sorun yaşadı. Lütfen kitabınızı yeniden oluşturmayı deneyin."
   },
   en: {
     coverTitle: "A Special Coloring Book for Kids",
     coverSubtitle: "Shaped by Your Wishes",
-    writingPrompt: "What do you see in the picture?",
+    writingPrompt: "What do you see in the picture? (Tell a short story)",
     coverPageTitle: "Cover Page",
     pageTitle: "Page",
+    generatingIdeas: "Generating ideas...",
+    designingCover: "Designing cover page...",
+    drawingPage: (idea: string) => `Drawing "${idea}" page...`,
+    pickingColors: (idea: string) => `Picking colors for "${idea}"...`,
+    generatingTitle: (name: string, theme: string) => `Creating a ${theme} coloring book for ${name}...`,
+    stepLabel: "Generation",
+    rateLimitError: "The coloring book factory is very busy right now! Please try again in a few moments.",
+    internalError: "The AI model had a temporary problem. Please try regenerating your book."
   }
 };
 
-// Safety function to handle potential issues with Turkish characters in AI output
-const sanitizeTurkish = (text: string): string => {
-    return text
-        .replace(/ç/g, 'c').replace(/Ç/g, 'C')
-        .replace(/ğ/g, 'g').replace(/Ğ/g, 'G')
-        .replace(/ı/g, 'i') // Special case for dotless i
-        .replace(/İ/g, 'I') // Special case for dotted I
-        .replace(/ö/g, 'o').replace(/Ö/g, 'O')
-        .replace(/ş/g, 's').replace(/Ş/g, 'S')
-        .replace(/ü/g, 'u').replace(/Ü/g, 'U');
+const transliterateTurkish = (text: string): string => {
+    if (!text) return "";
+    const replacements: { [key: string]: string } = {
+        'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G', 'ı': 'i', 'İ': 'I',
+        'ö': 'o', 'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U'
+    };
+    return text.split('').map(char => replacements[char] || char).join('');
 };
 
 
-const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, age, canWrite, onComplete }) => {
+const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, age, canWrite, onComplete, language }) => {
+    const s = uiStrings[language as keyof typeof uiStrings] || uiStrings.tr;
     const [progress, setProgress] = useState(0);
-    const [statusText, setStatusText] = useState('Fikirler oluşturuluyor...');
+    const [statusText, setStatusText] = useState(s.generatingIdeas);
     
-    const totalSteps = 1 + 1 + 1 + (pageCount * 2); 
+    const totalSteps = 1 + 1 + (pageCount * 2); 
     const [stepsCompleted, setStepsCompleted] = useState(0);
 
     useEffect(() => {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+        const highQualityImageModel = 'gemini-2.5-flash-image';
+        const standardImageModel = 'gemini-2.0-flash-preview-image-generation';
 
         const updateProgress = (newStepsCompleted: number) => {
             setStepsCompleted(newStepsCompleted);
             setProgress((newStepsCompleted / totalSteps) * 100);
         };
 
+        const generateImageWithRetry = async (
+            model: string, 
+            prompt: string, 
+            config: any, 
+            maxRetries = 3
+        ): Promise<string> => {
+            let lastError: Error | null = null;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await ai.models.generateContent({
+                        model,
+                        contents: { parts: [{ text: prompt }] },
+                        config,
+                    });
+        
+                    let imageBase64 = '';
+                    if (response?.candidates?.[0]?.content?.parts) {
+                        for (const part of response.candidates[0].content.parts) {
+                            if (part.inlineData) {
+                                imageBase64 = part.inlineData.data;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (imageBase64) {
+                         return imageBase64; // Success
+                    }
+                    
+                    lastError = new Error("Model response did not contain valid image data.");
+        
+                } catch (error) {
+                    lastError = error as Error;
+                    console.warn(`Attempt ${i + 1} failed for model ${model}. Retrying in 2s...`, error);
+                    
+                    if (error instanceof Error && (error.message.includes('"code":400') || error.message.includes('"code":429'))) {
+                        throw lastError;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+            throw lastError || new Error(`Failed to generate image with model ${model} after ${maxRetries} attempts.`);
+        };
+
         const generatePages = async () => {
             let currentSteps = 0;
             try {
                 const generatedPages: ColoringPage[] = [];
+                const langKey = language;
+                const detectedLanguage = langKey === 'tr' ? 'Turkish' : 'English';
 
-                // Step 1: Detect Language
-                setStatusText('Kullanıcının dili anlaşılıyor...');
-                const langDetectionResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: `Analyze the theme "${theme}" and determine its primary language. Respond with the common name of the language in English (e.g., "Turkish", "English"). If the theme is just a name, a mix of languages, or unclear, default to "English".`,
-                });
-                updateProgress(++currentSteps);
-                const detectedLanguage = langDetectionResponse.text.trim();
-                const langKey = detectedLanguage.toLowerCase().startsWith('tur') ? 'tr' : 'en';
-                const s = uiStrings[langKey];
-
-                // Step 2: Generate a list of page ideas
-                setStatusText('Hayal gücümüzü çalıştırıyoruz...');
+                // Step 1: Generate a list of page ideas
+                setStatusText(s.generatingIdeas);
                 const ideasResponse = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
                     contents: `Generate a list of ${pageCount} simple, one or two-word ideas in English for coloring book pages. The theme is "${theme}". The user's language is ${detectedLanguage}. Please interpret the theme correctly. For example, if the theme is 'aile' and language is 'Turkish', it means 'family'. Return a single JSON object with a key "ideas" containing an array of strings.`,
@@ -93,30 +147,29 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, a
                 const responseText = ideasResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
                 const pageIdeas: string[] = JSON.parse(responseText).ideas;
 
-                // Step 3: Generate Cover Page
-                setStatusText('Kapak sayfası tasarlanıyor...');
+                // Step 2: Generate Cover Page
+                setStatusText(s.designingCover);
                 const flagPrompt = langKey === 'tr' ? "Subtly incorporate a small, illustrated, wavy Turkish flag into the design. It should feel like part of the drawing, not a sticker, and should not be in a rigid rectangular shape." : "";
+                
+                const coverTitleText = transliterateTurkish(s.coverTitle);
+                const coverSubtitleText = transliterateTurkish(s.coverSubtitle);
+                const coverName = transliterateTurkish(name);
+
                 const coverPrompt = `Create a cover page for a coloring book for a child named '${name}'.
-The main title must be: "${s.coverTitle}".
-The subtitle must be: "${s.coverSubtitle}, ${name}!". Make sure to include the name '${name}' and the comma.
+The main title must be written EXACTLY as: "${coverTitleText}". Do not change the spelling or wording.
+The subtitle must be written EXACTLY as: "${coverSubtitleText}, ${coverName}!". Make sure to include the name '${coverName}' and the comma. Do not change the spelling.
 The theme for the imagery is "${theme}". The user's language is ${detectedLanguage}, please interpret the theme culturally and linguistically appropriately. The imagery should be colorful, vibrant, whimsical, and inviting.
 ${flagPrompt}
-The design should be fun and engaging for children. The text should be beautifully integrated into the overall design.`;
+The design should be fun and engaging for children. The text must be beautifully integrated into the overall design. Render the text clearly and without spelling errors.`;
 
-                const coverImageResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash-image',
-                    contents: { parts: [{ text: coverPrompt }] },
-                    config: { responseModalities: [Modality.IMAGE] },
-                });
+                const coverImageBase64 = await generateImageWithRetry(
+                    highQualityImageModel, 
+                    coverPrompt, 
+                    { responseModalities: [Modality.IMAGE] }
+                );
                 updateProgress(++currentSteps);
 
-                let coverImageBase64 = '';
-                if (coverImageResponse?.candidates?.[0]?.content?.parts) {
-                    for (const part of coverImageResponse.candidates[0].content.parts) {
-                        if (part.inlineData) coverImageBase64 = part.inlineData.data;
-                    }
-                }
-                if (!coverImageBase64) throw new Error("Cover image generation failed.");
+                if (!coverImageBase64) throw new Error("Cover image generation failed after retries.");
 
                 generatedPages.push({
                     imageUrl: `data:image/png;base64,${coverImageBase64}`,
@@ -125,37 +178,39 @@ The design should be fun and engaging for children. The text should be beautiful
                 });
 
 
-                // Step 4: Generate Coloring Pages
+                // Step 3: Generate Coloring Pages
                 for (let i = 0; i < pageCount; i++) {
                     const idea = pageIdeas[i % pageIdeas.length] || `${theme} ${i + 1}`;
-                    setStatusText(`"${idea}" sayfası çiziliyor...`);
+                    setStatusText(s.drawingPage(idea));
                     
-                    const storyPrompt = canWrite ? `At the bottom of the page, include a simple, empty, lined area for the child to write a short story. Add a simple title in ${detectedLanguage} above the lines: "${s.writingPrompt}".` : '';
+                    const storyPrompt = canWrite ? `At the bottom of the page, include a simple, empty, lined area for the child to write. Above the lines, add a title written EXACTLY as: "${s.writingPrompt}". Do not change the spelling or wording of this title.` : '';
                     const personalizationPrompt = `Also, subtly and creatively incorporate the child's name, '${name}', into the illustration itself. For example, it could be written in the clouds, on a toy block, or carved on a tree. It should be part of the scene to be colored.`;
                     const pagePrompt = `Create a coloring book page for a child aged ${age}. It should be a simple, clean, black and white line drawing of: "${idea}". This page is part of a book with the overall theme "${theme}" (user language: ${detectedLanguage}). The style should be fun, easy to color, with no shading, no text (except for the story title if requested), thick outlines, and a white background. ${personalizationPrompt} ${storyPrompt}`;
                     
-                    const pageImageResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-image',
-                        contents: { parts: [{ text: pagePrompt }] },
-                        config: { responseModalities: [Modality.IMAGE] },
-                    });
+                    const pageImageModel = i % 2 === 0 ? standardImageModel : highQualityImageModel;
+
+                    const pageImageConfig = {
+                        responseModalities: pageImageModel === standardImageModel
+                            ? [Modality.TEXT, Modality.IMAGE]
+                            : [Modality.IMAGE]
+                    };
+
+                    const pageImageBase64 = await generateImageWithRetry(
+                        pageImageModel,
+                        pagePrompt,
+                        pageImageConfig
+                    );
                     updateProgress(++currentSteps);
 
-                    let pageImageBase64 = '';
-                    if (pageImageResponse?.candidates?.[0]?.content?.parts) {
-                        for (const part of pageImageResponse.candidates[0].content.parts) {
-                            if (part.inlineData) pageImageBase64 = part.inlineData.data;
-                        }
-                    }
                     if (!pageImageBase64) {
-                        console.warn(`Image generation failed for page ${i+1}. Skipping.`);
+                        console.warn(`Image generation failed for page ${i+1} after retries. Skipping.`);
                         currentSteps++; 
                         updateProgress(currentSteps);
                         continue;
                     }
 
-                    // Step 5: Generate Color Palette for the page
-                    setStatusText(`"${idea}" için renkler seçiliyor...`);
+                    // Step 4: Generate Color Palette for the page
+                    setStatusText(s.pickingColors(idea));
                     const palettePrompt = `Based on this coloring page of a "${idea}", suggest a 5-color palette for a child. Return a JSON object with a key "colors" containing an array of objects. Each object must have "hex" (hex code) and "name". The "name" MUST be accurately translated into ${detectedLanguage}. For Turkish, you MUST use the correct Turkish characters (e.g., 'ı', 'ğ', 'ü', 'ş', 'ö', 'ç'). Do NOT replace them with other characters. The spelling MUST be perfect.`;
                     const paletteResponse = await ai.models.generateContent({
                         model: 'gemini-2.5-flash',
@@ -193,23 +248,33 @@ The design should be fun and engaging for children. The text should be beautiful
                     if (langKey === 'tr') {
                         pageColors = pageColors.map(color => ({
                             ...color,
-                            name: sanitizeTurkish(color.name)
+                            name: transliterateTurkish(color.name)
                         }));
                     }
 
                     generatedPages.push({
                         imageUrl: `data:image/png;base64,${pageImageBase64}`,
-                        title: `${s.pageTitle} ${i + 1}`,
-                        description: idea,
+                        title: `${idea}`,
+                        description: `${s.pageTitle} ${i + 1}`,
                         colorPalette: pageColors,
                     });
                 }
 
-                onComplete(generatedPages, langKey);
+                onComplete(generatedPages);
 
             } catch (error) {
                 console.error("Error during page generation:", error);
-                alert("Boyama kitabınız oluşturulurken bir hata oluştu. Lütfen tekrar deneyin.");
+                let errorMessage = "An error occurred while creating your coloring book. Please try again.";
+                if (error instanceof Error) {
+                    if (error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('429')) {
+                        errorMessage = s.rateLimitError;
+                    } else if (error.message.includes('"code":500') || error.message.includes('INTERNAL')) {
+                        errorMessage = s.internalError;
+                    } else {
+                        errorMessage = `Error during page generation:\n${error.message}`;
+                    }
+                }
+                alert(errorMessage);
                 window.location.reload();
             }
         };
@@ -224,14 +289,14 @@ The design should be fun and engaging for children. The text should be beautiful
                 <div className="flex items-center justify-center p-2">
                     <div className="rounded-full bg-white/50 dark:bg-black/20 backdrop-blur-sm px-4 py-2">
                         <p aria-live="polite" className="font-medium text-text-light dark:text-text-dark text-sm" role="status">
-                            <span className="font-bold">2/3</span> Üretim
+                            <span className="font-bold">2/3</span> {s.stepLabel}
                         </p>
                     </div>
                 </div>
             </header>
             <main className="flex flex-col items-center gap-6">
                 <h1 className="font-display text-4xl font-black text-slate-900 dark:text-white sm:text-5xl">
-                    {name} için {theme} temalı boyama kitabı oluşturuluyor...
+                    {s.generatingTitle(name, theme)}
                 </h1>
                 <div className="relative w-full max-w-md">
                     <div className="h-4 w-full rounded-full bg-slate-200 dark:bg-slate-700">
@@ -241,7 +306,7 @@ The design should be fun and engaging for children. The text should be beautiful
                         ></div>
                     </div>
                     <p className="absolute -top-6 right-0 text-sm font-medium text-slate-600 dark:text-slate-400">
-                        {stepsCompleted} / {totalSteps} adım
+                        {stepsCompleted} / {totalSteps} {language === 'tr' ? 'adım' : 'steps'}
                     </p>
                 </div>
                 <p className="text-slate-500 dark:text-slate-400 h-6">
