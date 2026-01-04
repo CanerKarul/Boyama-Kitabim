@@ -24,13 +24,17 @@ const uiStrings = {
     themePlaceholder: "Hayalindeki temayı yaz (örn: uzaydaki sevimli kediler)",
     popularThemes: "Veya Popüler Temalardan Seç:",
     generateButton: "Boyama Kitabı Oluştur",
+    selectNumberRange: "Sayı Aralığı Seç",
+    selectLetterSet: "Harf Seti Seç",
     themes: [
-      { name: 'Dinozorlar', icon: 'egg_alt' },
-      { name: 'Prensesler', icon: 'castle' },
-      { name: 'Arabalar', icon: 'directions_car' },
-      { name: 'Süper Kahramanlar', icon: 'shield' },
-      { name: 'Hayvanlar', icon: 'pets' },
-      { name: 'Uzay', icon: 'rocket_launch' },
+      { id: 'dinosaurs', name: 'Dinozorlar', icon: 'egg_alt' },
+      { id: 'princesses', name: 'Prensesler', icon: 'castle' },
+      { id: 'cars', name: 'Arabalar', icon: 'directions_car' },
+      { id: 'superheroes', name: 'Süper Kahramanlar', icon: 'shield' },
+      { id: 'animals', name: 'Hayvanlar', icon: 'pets' },
+      { id: 'space', name: 'Uzay', icon: 'rocket_launch' },
+      { id: 'numbers', name: 'Sayılar', icon: 'pin_123' },
+      { id: 'letters', name: 'Harfler', icon: 'match_case' },
     ]
   },
   en: {
@@ -49,13 +53,17 @@ const uiStrings = {
     themePlaceholder: "Enter your dream theme (e.g., cute cats in space)",
     popularThemes: "Or Choose From Popular Themes:",
     generateButton: "Create Coloring Book",
+    selectNumberRange: "Select Number Range",
+    selectLetterSet: "Select Letter Set",
     themes: [
-      { name: 'Dinosaurs', icon: 'egg_alt' },
-      { name: 'Princesses', icon: 'castle' },
-      { name: 'Cars', icon: 'directions_car' },
-      { name: 'Superheroes', icon: 'shield' },
-      { name: 'Animals', icon: 'pets' },
-      { name: 'Space', icon: 'rocket_launch' },
+      { id: 'dinosaurs', name: 'Dinosaurs', icon: 'egg_alt' },
+      { id: 'princesses', name: 'Princesses', icon: 'castle' },
+      { id: 'cars', name: 'Cars', icon: 'directions_car' },
+      { id: 'superheroes', name: 'Superheroes', icon: 'shield' },
+      { id: 'animals', name: 'Animals', icon: 'pets' },
+      { id: 'space', name: 'Space', icon: 'rocket_launch' },
+      { id: 'numbers', name: 'Numbers', icon: 'pin_123' },
+      { id: 'letters', name: 'Letters', icon: 'match_case' },
     ]
   }
 };
@@ -93,6 +101,10 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ onGenerate, language, onLanguag
   const [age, setAge] = useState(6);
   const [canWrite, setCanWrite] = useState(false);
   const [nameError, setNameError] = useState('');
+  const [specialTheme, setSpecialTheme] = useState<'numbers' | 'letters' | null>(null);
+  const [numberRange, setNumberRange] = useState('1-10');
+  const [letterSet, setLetterSet] = useState('A-Z');
+  
   const s = uiStrings[language as keyof typeof uiStrings] || uiStrings.tr;
 
   const handlePageCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,16 +116,23 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ onGenerate, language, onLanguag
     setAge(Number(e.target.value));
   };
 
-  const handleThemeButtonClick = (themeName: string) => {
+  const handleThemeButtonClick = (themeId: string, themeName: string) => {
     if (theme === themeName) {
-      setTheme(''); // Deselect
+      setTheme('');
+      setSpecialTheme(null);
     } else {
       setTheme(themeName);
+      if (themeId === 'numbers' || themeId === 'letters') {
+        setSpecialTheme(themeId);
+      } else {
+        setSpecialTheme(null);
+      }
     }
   };
 
   const handleThemeInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setTheme(e.target.value);
+    setSpecialTheme(null);
   };
 
   const handleSubmit = () => {
@@ -122,7 +141,15 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ onGenerate, language, onLanguag
       return;
     }
     setNameError('');
-    onGenerate({ name: name.trim(), pageCount, theme: theme.trim() || 'General', age, canWrite });
+    onGenerate({ 
+        name: name.trim(), 
+        pageCount, 
+        theme: theme.trim() || 'General', 
+        age, 
+        canWrite,
+        specialTheme,
+        specialThemeDetail: specialTheme === 'numbers' ? numberRange : letterSet
+    });
   };
   
   const toggleDarkMode = () => {
@@ -214,14 +241,32 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ onGenerate, language, onLanguag
                   <p className="text-slate-800 dark:text-slate-200 text-base font-medium leading-normal pb-2">{s.theme}</p>
                   <input value={theme} onChange={handleThemeInputChange} aria-label={s.theme} className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded text-slate-800 dark:text-white focus:outline-0 focus:ring-2 focus:ring-primary/50 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:border-primary h-14 placeholder:text-slate-400 dark:placeholder-slate-500 p-[15px] text-base font-normal leading-normal" placeholder={s.themePlaceholder} />
                 </label>
+                {specialTheme === 'numbers' && (
+                  <label className="flex flex-col w-full">
+                    <p className="text-slate-800 dark:text-slate-200 text-base font-medium leading-normal pb-2">{s.selectNumberRange}</p>
+                    <select value={numberRange} onChange={e => setNumberRange(e.target.value)} className="form-select w-full rounded text-slate-800 dark:text-white focus:outline-0 focus:ring-2 focus:ring-primary/50 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:border-primary h-12">
+                      <option value="1-10">1-10</option>
+                      <option value="11-20">11-20</option>
+                      <option value="21-30">21-30</option>
+                    </select>
+                  </label>
+                )}
+                 {specialTheme === 'letters' && (
+                  <label className="flex flex-col w-full">
+                    <p className="text-slate-800 dark:text-slate-200 text-base font-medium leading-normal pb-2">{s.selectLetterSet}</p>
+                    <select value={letterSet} onChange={e => setLetterSet(e.target.value)} className="form-select w-full rounded text-slate-800 dark:text-white focus:outline-0 focus:ring-2 focus:ring-primary/50 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:border-primary h-12">
+                      <option value="A-Z">A-Z</option>
+                    </select>
+                  </label>
+                )}
               </div>
               <div className="flex flex-col gap-4">
                 <p className="text-slate-800 dark:text-slate-200 text-base font-medium leading-normal text-center">{s.popularThemes}</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
                   {s.themes.map((t) => (
-                    <button key={t.name} onClick={() => handleThemeButtonClick(t.name)} aria-pressed={theme === t.name} className={`group relative flex flex-col items-center justify-center gap-2 p-4 h-28 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-primary dark:hover:border-primary hover:bg-primary/5 dark:hover:bg-primary/10 transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background-light dark:focus:ring-offset-background-dark ${theme === t.name ? 'ring-2 ring-primary border-primary bg-primary/10 dark:bg-primary/20' : ''}`}>
+                    <button key={t.id} onClick={() => handleThemeButtonClick(t.id, t.name)} aria-pressed={theme === t.name} className={`group relative flex flex-col items-center justify-center gap-2 p-4 h-28 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-primary dark:hover:border-primary hover:bg-primary/5 dark:hover:bg-primary/10 transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background-light dark:focus:ring-offset-background-dark ${theme === t.name ? 'ring-2 ring-primary border-primary bg-primary/10 dark:bg-primary/20' : ''}`}>
                       <span className="material-symbols-outlined text-4xl text-accent transition-transform duration-200 ease-in-out group-hover:scale-110">{t.icon}</span>
-                      <span className={`text-sm font-medium text-slate-700 dark:text-slate-300 group-hover:text-primary dark:group-hover:text-primary ${theme === t.name ? 'text-primary' : ''}`}>{t.name}</span>
+                      <span className={`text-sm font-medium text-center text-slate-700 dark:text-slate-300 group-hover:text-primary dark:group-hover:text-primary ${theme === t.name ? 'text-primary' : ''}`}>{t.name}</span>
                       {theme === t.name && <span className="material-symbols-outlined text-xl text-primary absolute top-2 right-2">check_circle</span>}
                     </button>
                   ))}

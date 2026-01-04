@@ -22,4 +22,6 @@ export interface GenerationData {
   theme: string;
   age: number;
   canWrite: boolean;
+  specialTheme?: 'numbers' | 'letters' | null;
+  specialThemeDetail?: string; // e.g., "1-10" or "A-Z"
 }

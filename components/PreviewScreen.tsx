@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ColoringPage } from '../types';
+import { GoogleGenAI, Modality } from '@google/genai';
 
 declare global {
     interface Window {
@@ -22,22 +23,39 @@ const uiStrings = {
     step: "ADIM 3/3 - ÖNİZLEME",
     title: "Harika! İşte Boyama Kitabın",
     subtitle: "Sayfaları incele, üzerinde değişiklik yap veya hazır olduğunda kitabını indir.",
-    newBook: "Yeni Kitap Oluştur",
-    regenerate: "Yeniden Oluştur",
-    download: "PDF'i İndir",
-    downloading: "İndiriliyor...",
+    newBook: "Yeni Kitap",
+    regenerate: "Tümünü Yeniden Üret",
+    download: "PDF İndir",
+    print: "Yazdır",
+    downloading: "Hazırlanıyor...",
     colorPaletteLabel: "Önerilen Renkler:",
+    coverTitle: "COCUKLARA OZEL BOYAMA KITABI", 
+    coverSubtitle: (name: string) => `Senin Isteginle Sekilleniyor, ${name}!`,
+    regeneratePage: "Bu Sayfayı Yenile"
   },
   en: {
     step: "STEP 3/3 - PREVIEW",
     title: "Awesome! Here's Your Coloring Book",
     subtitle: "Review the pages, make changes, or download your book when you're ready.",
-    newBook: "Create New Book",
-    regenerate: "Regenerate",
+    newBook: "New Book",
+    regenerate: "Regenerate All",
     download: "Download PDF",
-    downloading: "Downloading...",
+    print: "Print",
+    downloading: "Preparing...",
     colorPaletteLabel: "Suggested Colors:",
+    coverTitle: "SPECIAL FUN COLORING BOOK",
+    coverSubtitle: (name: string) => `Shaped by Your Wishes, ${name}!`,
+    regeneratePage: "Regenerate This Page"
   }
+};
+
+const transliterateTurkish = (text: string): string => {
+    if (!text) return "";
+    const replacements: { [key: string]: string } = {
+        'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G', 'ı': 'i', 'İ': 'I',
+        'ö': 'o', 'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U'
+    };
+    return text.split('').map(char => replacements[char] || char).join('');
 };
 
 const LanguageSwitcher: React.FC<{ language: string; onLanguageChange: (lang: string) => void; }> = ({ language, onLanguageChange }) => {
@@ -67,9 +85,117 @@ const LanguageSwitcher: React.FC<{ language: string; onLanguageChange: (lang: st
 };
 
 
-const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdit, onRegenerate, language, onLanguageChange }) => {
+const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages: initialPages, onEdit, onRegenerate, language, onLanguageChange }) => {
+  const [pages, setPages] = useState<ColoringPage[]>(initialPages);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const s = uiStrings[language as keyof typeof uiStrings] || uiStrings.tr;
+
+  const handleRegeneratePage = async (index: number) => {
+      setRegeneratingIndex(index);
+      try {
+          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          const page = pages[index];
+          
+          let prompt = `Create a coloring book page. Scene: ${page.title}. Style: Simple, thick outlines. Constraint: Pure black ink on white paper only. NO shading.`;
+          let imageConfig = {};
+
+          if (index === 0) {
+              // Cover page logic - AI RENDERS TEXT
+              const flagPrompt = language === 'tr' ? 'Include a waving Turkish flag in the background.' : '';
+              
+              const safeName = transliterateTurkish(name);
+              const safeTitle = s.coverTitle; 
+              const safeSubtitle = s.coverSubtitle(safeName);
+
+              prompt = `Create a cover page illustration for a coloring book. 
+              Theme: "${theme}". 
+              Style: Vibrant, colorful, 3D digital art style. 
+              Constraint: Full Color.
+              Instructions:
+              1. Render the text "${safeTitle}" boldly at the top of the image.
+              2. Render the text "${safeSubtitle}" clearly at the bottom.
+              3. Ensure spelling is exact.
+              4. IMPORTANT: Keep all text away from the very edges of the image to prevent cutting. Center the composition.
+              ${flagPrompt}`;
+              
+              imageConfig = { aspectRatio: '3:4' };
+          }
+
+          const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash-image',
+              contents: { parts: [{ text: prompt }] },
+              config: { 
+                  responseModalities: [Modality.IMAGE],
+                  imageConfig: imageConfig
+              },
+          });
+
+          let imageBase64 = '';
+            if (response?.candidates?.[0]?.content?.parts) {
+                for (const part of response.candidates[0].content.parts) {
+                    if (part.inlineData) {
+                        imageBase64 = part.inlineData.data;
+                        break;
+                    }
+                }
+            }
+          
+          if (imageBase64) {
+              const newPages = [...pages];
+              newPages[index] = {
+                  ...page,
+                  imageUrl: `data:image/png;base64,${imageBase64}`
+              };
+              setPages(newPages);
+          }
+      } catch (error) {
+          console.error("Failed to regenerate page", error);
+          alert("Could not regenerate this page. Please try again.");
+      } finally {
+          setRegeneratingIndex(null);
+      }
+  };
+
+  const handlePrint = () => {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) return;
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>${name} - Coloring Book</title>
+            <style>
+                @media print {
+                    body { margin: 0; padding: 0; }
+                    .page-break { page-break-after: always; }
+                    .page-container { width: 100%; height: 100vh; display: flex; align-items: center; justify-content: center; }
+                    img { max-width: 95%; max-height: 95%; object-fit: contain; }
+                }
+                body { font-family: sans-serif; text-align: center; }
+                .page-container { margin-bottom: 20px; }
+                img { max-width: 800px; border: 1px solid #ccc; }
+            </style>
+        </head>
+        <body>
+            <div class="page-container page-break">
+                <img src="${pages[0].imageUrl}" />
+            </div>
+            ${pages.slice(1).map(page => `
+                <div class="page-container page-break">
+                    <img src="${page.imageUrl}" />
+                </div>
+            `).join('')}
+            <script>
+                window.onload = function() { window.print(); }
+            </script>
+        </body>
+        </html>
+      `;
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+  };
 
   const handleDownloadPdf = async () => {
     setIsDownloading(true);
@@ -80,11 +206,14 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
       format: 'a4'
     });
 
+    // Add font for better looking text (Standard fonts are limited, but Helvetica Bold is okay)
+    doc.setFont("helvetica", "bold");
+
     const A4_WIDTH = 210;
     const A4_HEIGHT = 297;
     const MARGIN = 10;
     const MAX_WIDTH = A4_WIDTH - MARGIN * 2;
-    const MAX_HEIGHT = A4_HEIGHT - MARGIN * 2 - 25; // Extra space for palette/page number
+    const MAX_HEIGHT = A4_HEIGHT - MARGIN * 2 - 25; 
     
     const IMAGE_ASPECT_RATIO = 1 / 1; 
 
@@ -113,51 +242,79 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
             });
 
             if (i === 0) { // Cover page
-                doc.addImage(page.imageUrl, 'PNG', 0, 0, A4_WIDTH, A4_HEIGHT);
+                // Full Page "Aspect Fill" logic to prevent cutting off text while filling the page.
+                const imgAspect = img.width / img.height;
+                const pageAspect = A4_WIDTH / A4_HEIGHT;
+                
+                let renderW, renderH, renderX, renderY;
+
+                // For the cover, we want to fill the page as much as possible, 
+                // but since it has text, we prioritize NOT cropping width significantly if it's wider than A4.
+                // However, "Complete Fill" was requested.
+                // Best compromise: Fill the page. Since we are now generating 3:4 images (approx 0.75 ratio)
+                // and A4 is 0.70 ratio, the image is slightly wider than the page.
+                // We will match height (297) and crop the sides slightly (centering).
+                
+                // If Image is Wider than Page (3:4 image on A4)
+                if (imgAspect > pageAspect) {
+                    renderH = A4_HEIGHT;
+                    renderW = renderH * imgAspect;
+                    renderX = (A4_WIDTH - renderW) / 2; // Center horizontally (crops sides)
+                    renderY = 0;
+                } else {
+                    // Image is Taller than Page (unlikely with 3:4, but possible with 9:16)
+                    renderW = A4_WIDTH;
+                    renderH = renderW / imgAspect;
+                    renderY = (A4_HEIGHT - renderH) / 2; // Center vertically
+                    renderX = 0;
+                }
+                
+                doc.addImage(img, 'PNG', renderX, renderY, renderW, renderH);
+
             } else { // Coloring pages
                 doc.addImage(img, 'PNG', x, y, imgWidth, imgHeight);
             }
 
         } catch (error) {
             console.error(`Failed to add image ${i} to PDF:`, error);
-            doc.text(`Image for "${page.title}" failed to load.`, A4_WIDTH / 2, A4_HEIGHT / 2, { align: 'center' });
         }
 
         if (i > 0) {
-            // Add suggested color palette
+            // Add suggested color palette WITH NAMES
             if (page.colorPalette && page.colorPalette.length > 0) {
                 const palette = page.colorPalette;
                 const swatchSize = 8;
-                const itemGap = 8;
-                const startY = A4_HEIGHT - 25;
-                
-                doc.setFontSize(8);
-                
-                const itemWidths = palette.map(color => Math.max(swatchSize, doc.getTextWidth(color.name)));
-                const totalPaletteWidth = itemWidths.reduce((sum, width) => sum + width, 0) + (palette.length - 1) * itemGap;
-                
-                let startX = (A4_WIDTH - totalPaletteWidth) / 2;
+                const itemGap = 12; // Increased gap for names
+                const startY = A4_HEIGHT - 30; // Moved up slightly
                 
                 doc.setFontSize(9);
                 doc.setTextColor(100, 100, 100);
                 doc.setFont('helvetica', 'normal');
+                
                 const labelText = s.colorPaletteLabel;
-                const labelWidth = doc.getTextWidth(labelText);
-                doc.text(labelText, startX - labelWidth - 5 > 0 ? startX - labelWidth - 5 : 10, startY + swatchSize / 2 + 1);
+                
+                // Calculate total width of palette section to center it
+                const totalPaletteWidth = (palette.length * swatchSize) + ((palette.length - 1) * itemGap);
+                
+                // Draw Label
+                doc.text(labelText, A4_WIDTH / 2, startY - 5, { align: 'center' });
 
-                let currentX = startX;
-                palette.forEach((color, index) => {
-                    const currentItemWidth = itemWidths[index];
-                    const swatchXOffset = (currentItemWidth - swatchSize) / 2;
-                    
+                let currentX = (A4_WIDTH - totalPaletteWidth) / 2;
+
+                palette.forEach((color) => {
+                    // Draw Swatch
                     doc.setFillColor(color.hex);
-                    doc.rect(currentX + swatchXOffset, startY, swatchSize, swatchSize, 'F');
-
-                    doc.setFontSize(8);
-                    doc.setTextColor(50, 50, 50);
-                    doc.text(color.name, currentX + currentItemWidth / 2, startY + swatchSize + 5, { align: 'center' });
+                    doc.setDrawColor(200, 200, 200); // Light grey border
+                    doc.rect(currentX, startY, swatchSize, swatchSize, 'FD'); // Fill and Draw
                     
-                    currentX += currentItemWidth + itemGap;
+                    // Draw Name (Transliterated)
+                    doc.setTextColor(50, 50, 50);
+                    doc.setFontSize(7);
+                    // Split name if too long
+                    const cleanName = color.name;
+                    doc.text(cleanName, currentX + (swatchSize/2), startY + swatchSize + 4, { align: 'center', maxWidth: swatchSize + 4 });
+                    
+                    currentX += swatchSize + itemGap;
                 });
             }
 
@@ -166,7 +323,7 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
             doc.setFontSize(10);
             doc.setTextColor(150, 150, 150);
             doc.setFont('helvetica', 'normal');
-            doc.text(pageNumText, A4_WIDTH / 2, A4_HEIGHT - 7, { align: 'center' });
+            doc.text(pageNumText, A4_WIDTH / 2, A4_HEIGHT - 5, { align: 'center' });
         }
     }
     
@@ -214,57 +371,88 @@ const PreviewScreen: React.FC<PreviewScreenProps> = ({ name, theme, pages, onEdi
                 <p className="text-slate-500 dark:text-slate-400 mx-auto max-w-2xl text-base font-normal leading-normal md:text-lg">{s.subtitle}</p>
               </div>
             </div>
-            <div className="flex overflow-x-auto [-ms-scrollbar-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <div className="flex items-start gap-4 p-1 md:gap-6">
+            
+            {/* Scrollable Container */}
+            <div className="flex overflow-x-auto [-ms-scrollbar-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden py-4 pb-12">
+              <div className="flex items-start gap-4 px-4 md:gap-6">
+                
                 {/* Cover Page */}
                 {coverPage && (
-                  <div className="group/page flex h-full min-w-[15rem] flex-1 flex-col gap-3 md:min-w-[18rem]">
-                    <div className="relative w-full aspect-[3/4] overflow-hidden rounded-xl border-4 border-accent shadow-lg">
-                      <div className="absolute inset-0 bg-cover bg-center bg-no-repeat transition-transform duration-300 ease-in-out group-hover/page:scale-110" style={{ backgroundImage: `url("${coverPage.imageUrl}")` }}></div>
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 p-4 transition-opacity duration-300 ease-in-out group-hover/page:opacity-0">
-                        <h2 className="text-center font-display text-3xl font-bold text-white">{theme}</h2>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="font-display text-lg font-bold leading-normal text-text-light dark:text-text-dark">{coverPage.title}</p>
-                        <p className="font-body text-sm font-normal leading-normal text-slate-500 dark:text-slate-400 truncate">{name}'s Adventure</p>
-                      </div>
+                  <div className="group/page relative flex h-full min-w-[15rem] flex-1 flex-col gap-3 md:min-w-[20rem]">
+                     <button 
+                        onClick={() => handleRegeneratePage(0)}
+                        className="absolute z-30 top-4 right-4 h-10 w-10 rounded-full bg-white shadow-lg text-primary flex items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity hover:scale-110"
+                        title={s.regeneratePage}
+                     >
+                         {regeneratingIndex === 0 ? <span className="animate-spin material-symbols-outlined">refresh</span> : <span className="material-symbols-outlined">refresh</span>}
+                     </button>
+
+                    <div className="relative w-full aspect-[210/297] overflow-hidden rounded-xl border-4 border-slate-200 shadow-xl bg-white flex flex-col items-center justify-center">
+                        <img 
+                            src={coverPage.imageUrl} 
+                            alt="Cover" 
+                            className="w-full h-full object-cover" 
+                        />
                     </div>
                   </div>
                 )}
+
                 {/* Coloring Pages */}
-                {coloringPages.map((page, index) => (
-                  <div key={index} className="group/page flex h-full min-w-[15rem] flex-1 flex-col gap-3 md:min-w-[18rem]">
-                    <div className="relative w-full overflow-hidden rounded-xl border-2 border-gray-200 bg-white dark:border-gray-700 shadow-lg">
-                      <div className="w-full bg-center bg-no-repeat aspect-[3/4] bg-contain transition-transform duration-300 ease-in-out group-hover/page:scale-110" style={{ backgroundImage: `url("${page.imageUrl}")` }}></div>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="font-display text-lg font-bold leading-normal text-text-light dark:text-text-dark">{page.title}</p>
-                        <p className="font-body text-sm font-normal leading-normal text-slate-500 dark:text-slate-400 truncate">{page.description}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                {coloringPages.map((page, index) => {
+                    const actualIndex = index + 1;
+                    return (
+                        <div key={index} className="group/page relative flex h-full min-w-[15rem] flex-1 flex-col gap-3 md:min-w-[18rem]">
+                             <button 
+                                onClick={() => handleRegeneratePage(actualIndex)}
+                                className="absolute z-20 top-4 right-4 h-10 w-10 rounded-full bg-white shadow-lg text-primary flex items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity hover:scale-110"
+                                title={s.regeneratePage}
+                            >
+                                {regeneratingIndex === actualIndex ? <span className="animate-spin material-symbols-outlined">refresh</span> : <span className="material-symbols-outlined">refresh</span>}
+                            </button>
+
+                            <div className="relative w-full overflow-hidden rounded-xl border-2 border-gray-200 bg-white dark:border-gray-700 shadow-lg aspect-[210/297]">
+                                <img src={page.imageUrl} alt={page.title} className="w-full h-full object-contain p-4" />
+                            </div>
+                            <div className="flex flex-col gap-2 px-1">
+                                <div>
+                                    <p className="font-display text-lg font-bold leading-normal text-text-light dark:text-text-dark truncate max-w-[14rem]">{page.title}</p>
+                                    <p className="font-body text-sm font-normal leading-normal text-slate-500 dark:text-slate-400 truncate">{page.description}</p>
+                                </div>
+                                {/* Palette Preview */}
+                                {page.colorPalette && (
+                                    <div className="flex gap-2 flex-wrap">
+                                        {page.colorPalette.map((c, i) => (
+                                            <div key={i} className="flex flex-col items-center gap-1">
+                                                <div className="w-6 h-6 rounded-full border border-slate-200" style={{ backgroundColor: c.hex }} title={c.name}></div>
+                                                <span className="text-[10px] text-slate-500 max-w-[40px] truncate">{c.name}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
               </div>
             </div>
+
             <div className="flex justify-center pt-4 md:pt-8">
-                <div className="flex w-full max-w-lg flex-col gap-3 sm:flex-row">
-                    <button onClick={onEdit} aria-label="Yeni kitap oluştur" className="flex h-14 w-full sm:flex-1 cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-full bg-slate-200/80 text-text-light dark:bg-slate-800/80 dark:text-text-dark px-6 font-display text-base font-bold leading-normal tracking-wide transition-all duration-300 hover:bg-slate-300/80 dark:hover:bg-slate-700/80 hover:scale-105">
+                <div className="grid grid-cols-2 md:grid-cols-4 w-full max-w-3xl gap-3">
+                    <button onClick={onEdit} className="flex h-14 items-center justify-center gap-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all active:scale-95">
                         <span className="material-symbols-outlined">edit</span>
-                        <span>{s.newBook}</span>
+                        <span className="hidden sm:inline">{s.newBook}</span>
                     </button>
-                     <button onClick={onRegenerate} aria-label="Mevcut ayarlar ile yeniden oluştur" className="flex h-14 w-full sm:flex-1 cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-full bg-blue-200/80 text-text-light dark:bg-blue-800/80 dark:text-text-dark px-6 font-display text-base font-bold leading-normal tracking-wide transition-all duration-300 hover:bg-blue-300/80 dark:hover:bg-blue-700/80 hover:scale-105">
-                        <span className="material-symbols-outlined">refresh</span>
-                        <span>{s.regenerate}</span>
+                     <button onClick={onRegenerate} className="flex h-14 items-center justify-center gap-2 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-all active:scale-95">
+                        <span className="material-symbols-outlined">restart_alt</span>
+                        <span className="hidden sm:inline">{s.regenerate}</span>
                     </button>
-                    <button onClick={handleDownloadPdf} disabled={isDownloading} aria-label="Boyama kitabını PDF olarak indir" className="flex h-14 w-full sm:flex-1 cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-full bg-accent text-white px-6 font-display text-base font-bold leading-normal tracking-wide shadow-lg shadow-accent/40 transition-transform duration-300 hover:scale-105 disabled:opacity-50 disabled:cursor-wait">
+                    <button onClick={handlePrint} className="flex h-14 items-center justify-center gap-2 rounded-xl bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-300 font-bold hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-all active:scale-95">
+                        <span className="material-symbols-outlined">print</span>
+                        <span>{s.print}</span>
+                    </button>
+                    <button onClick={handleDownloadPdf} disabled={isDownloading} className="flex h-14 items-center justify-center gap-2 rounded-xl bg-accent text-white font-bold shadow-lg shadow-accent/30 hover:bg-orange-600 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
                         {isDownloading ? (
-                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
+                            <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
                         ) : (
                             <span className="material-symbols-outlined">download</span>
                         )}

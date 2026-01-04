@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ColoringPage, ColorInfo } from '../types';
-import { GoogleGenAI, Modality, Type, GenerateContentResponse } from '@google/genai';
+import { GoogleGenAI, Modality, Type } from '@google/genai';
 
 interface LoadingScreenProps {
   name: string;
@@ -10,36 +10,42 @@ interface LoadingScreenProps {
   canWrite: boolean;
   onComplete: (pages: ColoringPage[]) => void;
   language: string;
+  specialTheme?: 'numbers' | 'letters' | null;
+  specialThemeDetail?: string;
 }
 
 const uiStrings = {
   tr: {
-    coverTitle: "Çocuklara Özel Eğlenceli Boyama Kitabı",
-    coverSubtitle: "Senin İsteğinle şekilleniyor",
-    writingPrompt: "Resimde ne goruyorsun? (Kisaca anlat)",
+    coverTitle: "COCUKLARA OZEL BOYAMA KITABI", // Transliterated for AI safety
+    coverSubtitle: (name: string) => `Senin Isteginle Sekilleniyor, ${name}!`, // Transliterated
+    writingPrompt: "Resimde ne görüyorsun? (Kısaca anlat)",
     coverPageTitle: "Kapak Sayfası",
     pageTitle: "Sayfa",
-    generatingIdeas: "Fikirler oluşturuluyor...",
-    designingCover: "Kapak sayfası tasarlanıyor...",
-    drawingPage: (idea: string) => `"${idea}" sayfası çiziliyor...`,
+    generatingIdeas: "Yapay zeka hikayeyi kurguluyor...",
+    generatingCharacter: "Ana karakter tasarlanıyor...",
+    designingCover: "Kapak sayfası tasarlanıyor (Renkli)...",
+    drawingPage: (idea: string) => `"${idea}" çiziliyor...`,
     pickingColors: (idea: string) => `"${idea}" için renkler seçiliyor...`,
-    generatingTitle: (name: string, theme: string) => `${name} için ${theme} temalı boyama kitabı oluşturuluyor...`,
+    generatingTitle: (name: string, theme: string) => `${name} için ${theme} boyama kitabı hazırlanıyor...`,
     stepLabel: "Üretim",
+    livePreview: "Canlı Önizleme",
     rateLimitError: "Boyama kitabı fabrikası şu anda çok meşgul! Lütfen birkaç dakika sonra tekrar deneyin.",
     internalError: "Yapay zeka modeli geçici bir sorun yaşadı. Lütfen kitabınızı yeniden oluşturmayı deneyin."
   },
   en: {
-    coverTitle: "A Special Coloring Book for Kids",
-    coverSubtitle: "Shaped by Your Wishes",
+    coverTitle: "SPECIAL FUN COLORING BOOK",
+    coverSubtitle: (name: string) => `Shaped by Your Wishes, ${name}!`,
     writingPrompt: "What do you see in the picture? (Tell a short story)",
     coverPageTitle: "Cover Page",
     pageTitle: "Page",
-    generatingIdeas: "Generating ideas...",
-    designingCover: "Designing cover page...",
-    drawingPage: (idea: string) => `Drawing "${idea}" page...`,
+    generatingIdeas: "AI is crafting the story...",
+    generatingCharacter: "Designing the main character...",
+    designingCover: "Designing cover page (Colorful)...",
+    drawingPage: (idea: string) => `Drawing "${idea}"...`,
     pickingColors: (idea: string) => `Picking colors for "${idea}"...`,
     generatingTitle: (name: string, theme: string) => `Creating a ${theme} coloring book for ${name}...`,
     stepLabel: "Generation",
+    livePreview: "Live Preview",
     rateLimitError: "The coloring book factory is very busy right now! Please try again in a few moments.",
     internalError: "The AI model had a temporary problem. Please try regenerating your book."
   }
@@ -55,23 +61,42 @@ const transliterateTurkish = (text: string): string => {
 };
 
 
-const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, age, canWrite, onComplete, language }) => {
+const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, age, canWrite, onComplete, language, specialTheme, specialThemeDetail }) => {
     const s = uiStrings[language as keyof typeof uiStrings] || uiStrings.tr;
     const [progress, setProgress] = useState(0);
     const [statusText, setStatusText] = useState(s.generatingIdeas);
+    const [livePreviewImages, setLivePreviewImages] = useState<string[]>([]);
     
-    const totalSteps = 1 + 1 + (pageCount * 2); 
+    // We add +1 for character design step in creative mode
+    const [totalSteps, setTotalSteps] = useState(1 + 1 + 1 + (pageCount * 2)); 
     const [stepsCompleted, setStepsCompleted] = useState(0);
+    
+    // Use a ref to track if we've already started generation to prevent double-firing in StrictMode
+    const hasStartedRef = useRef(false);
 
     useEffect(() => {
+        if (hasStartedRef.current) return;
+        hasStartedRef.current = true;
+
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-        const highQualityImageModel = 'gemini-2.5-flash-image';
-        const standardImageModel = 'gemini-2.0-flash-preview-image-generation';
+        // SPEED OPTIMIZATION: Use Flash for Logic to avoid stuck states.
+        const logicModel = 'gemini-2.5-flash';
+        const imageModel = 'gemini-2.5-flash-image';
+        
+        let localTotalSteps = 1 + 1 + 1 + (pageCount * 2); 
+        if (specialTheme) {
+            localTotalSteps = 1 + (pageCount * 2); // Simpler flow for educational
+        }
+        setTotalSteps(localTotalSteps);
 
         const updateProgress = (newStepsCompleted: number) => {
             setStepsCompleted(newStepsCompleted);
-            setProgress((newStepsCompleted / totalSteps) * 100);
+            setProgress(Math.min((newStepsCompleted / localTotalSteps) * 100, 100));
+        };
+
+        const addLivePreview = (base64Image: string) => {
+            setLivePreviewImages(prev => [...prev, `data:image/png;base64,${base64Image}`]);
         };
 
         const generateImageWithRetry = async (
@@ -83,6 +108,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, a
             let lastError: Error | null = null;
             for (let i = 0; i < maxRetries; i++) {
                 try {
+                    // Backoff
+                    if (i > 0) await new Promise(resolve => setTimeout(resolve, 2000));
+
                     const response = await ai.models.generateContent({
                         model,
                         contents: { parts: [{ text: prompt }] },
@@ -100,229 +128,337 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ name, pageCount, theme, a
                     }
                     
                     if (imageBase64) {
-                         return imageBase64; // Success
+                         return imageBase64; 
                     }
                     
                     lastError = new Error("Model response did not contain valid image data.");
         
                 } catch (error) {
                     lastError = error as Error;
-                    console.warn(`Attempt ${i + 1} failed for model ${model}. Retrying in 2s...`, error);
-                    
-                    if (error instanceof Error && (error.message.includes('"code":400') || error.message.includes('"code":429'))) {
-                        throw lastError;
-                    }
-                    
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    console.warn(`Attempt ${i + 1} failed for model ${model}.`, error);
                 }
             }
-            throw lastError || new Error(`Failed to generate image with model ${model} after ${maxRetries} attempts.`);
+            throw lastError || new Error(`Failed to generate image with model ${model}.`);
         };
+        
+        const generateEducationalPages = async () => {
+             let currentSteps = 0;
+             const generatedPages: ColoringPage[] = [];
+             const langKey = language;
+             const detectedLanguage = langKey === 'tr' ? 'Turkish' : 'English';
+             
+             setStatusText(s.designingCover);
+             
+             // COVER PROMPT: Colorful, with Flag if Turkish
+             const flagPrompt = langKey === 'tr' ? 'Include a waving Turkish flag in the background.' : '';
+             
+             // Prepare text for AI (Transliterated)
+             const safeName = transliterateTurkish(name);
+             const safeTitle = s.coverTitle; 
+             const safeSubtitle = s.coverSubtitle(safeName);
 
-        const generatePages = async () => {
-            let currentSteps = 0;
-            try {
-                const generatedPages: ColoringPage[] = [];
-                const langKey = language;
-                const detectedLanguage = langKey === 'tr' ? 'Turkish' : 'English';
+             const coverPrompt = `Create a cover page illustration for a children's book. 
+             Theme: "${theme}". 
+             Style: Vibrant, colorful, 3D Disney/Pixar style or detailed illustration.
+             Constraint: Full Color.
+             Instructions:
+             1. Render the text "${safeTitle}" boldly at the top of the image.
+             2. Render the text "${safeSubtitle}" clearly at the bottom.
+             3. Ensure spelling is exact.
+             4. IMPORTANT: Keep all text away from the very edges of the image to prevent cutting. Center the composition.
+             ${flagPrompt}`;
+             
+             await new Promise(resolve => setTimeout(resolve, 500));
+             
+             const coverImageBase64 = await generateImageWithRetry(
+                 imageModel,
+                 coverPrompt,
+                 { 
+                     responseModalities: [Modality.IMAGE],
+                     imageConfig: { aspectRatio: '3:4' } // Portrait aspect ratio for A4
+                 }
+             );
+             
+             addLivePreview(coverImageBase64);
+             updateProgress(++currentSteps);
+             generatedPages.push({
+                 imageUrl: `data:image/png;base64,${coverImageBase64}`,
+                 title: s.coverPageTitle,
+                 description: `${name}'s ${theme} Adventure`,
+             });
+             
+             let items: (string|number)[] = [];
+             if (specialTheme === 'numbers' && specialThemeDetail) {
+                 const [start, end] = specialThemeDetail.split('-').map(Number);
+                 for(let i = start; i <= end; i++) items.push(i);
+             } else if (specialTheme === 'letters' && specialThemeDetail) {
+                 const [startChar, endChar] = specialThemeDetail.split('-');
+                 if (langKey === 'tr') {
+                     const turkishAlphabet = "ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ";
+                     const startIndex = turkishAlphabet.indexOf(startChar);
+                     const endIndex = turkishAlphabet.indexOf(endChar);
+                     if (startIndex !== -1 && endIndex !== -1 && startIndex <= endIndex) {
+                         for(let i = startIndex; i <= endIndex; i++) items.push(turkishAlphabet[i]);
+                     } else {
+                         for(let i = 65; i <= 90; i++) items.push(String.fromCharCode(i));
+                     }
+                 } else {
+                     const startCode = startChar.charCodeAt(0);
+                     const endCode = endChar.charCodeAt(0);
+                     for(let i = startCode; i <= endCode; i++) items.push(String.fromCharCode(i));
+                 }
+             }
+             
+             const itemsPerPage = Math.ceil(items.length / pageCount);
+             
+             for (let i = 0; i < pageCount; i++) {
+                 await new Promise(resolve => setTimeout(resolve, 500));
 
-                // Step 1: Generate a list of page ideas
-                setStatusText(s.generatingIdeas);
-                const ideasResponse = await ai.models.generateContent({
+                 const pageItems = items.slice(i * itemsPerPage, (i + 1) * itemsPerPage);
+                 if (pageItems.length === 0) continue;
+                 
+                 const idea = `${theme}: ${pageItems.join(', ')}`;
+                 setStatusText(s.drawingPage(idea));
+                 
+                 const itemDescription = specialTheme === 'numbers' ? 'number(s)' : 'letter(s)';
+                 const specificItems = pageItems.join(' and ');
+
+                 const pagePrompt = `Create a simple coloring page of ${itemDescription}: ${specificItems}. Large, thick, hollow outlines. White background. NO shading. NO grayscale. Pure black lines.`;
+                 
+                 const pageImageBase64 = await generateImageWithRetry(
+                     imageModel,
+                     pagePrompt,
+                     { responseModalities: [Modality.IMAGE] }
+                 );
+                 addLivePreview(pageImageBase64);
+                 updateProgress(++currentSteps);
+                 
+                 setStatusText(s.pickingColors(idea));
+                 const paletteResponse = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
-                    contents: `Generate a list of ${pageCount} simple, one or two-word ideas in English for coloring book pages. The theme is "${theme}". The user's language is ${detectedLanguage}. Please interpret the theme correctly. For example, if the theme is 'aile' and language is 'Turkish', it means 'family'. Return a single JSON object with a key "ideas" containing an array of strings.`,
-                    config: {
-                        responseMimeType: "application/json",
-                        responseSchema: {
-                            type: Type.OBJECT,
-                            properties: {
-                                ideas: { type: Type.ARRAY, items: { type: Type.STRING } }
-                            },
-                            required: ['ideas']
-                        }
-                    }
+                    contents: { parts: [{ inlineData: { mimeType: 'image/png', data: pageImageBase64 } }, { text: `Suggest 5 colors. JSON: { "colors": [{ "hex": "#...", "name": "..." }] }. Translate to ${detectedLanguage}.` }] },
+                    config: { responseMimeType: "application/json", responseSchema: { type: Type.OBJECT, properties: { colors: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { hex: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['hex', 'name'] } } }, required: ['colors'] } }
+                 });
+                 updateProgress(++currentSteps);
+                 const paletteText = paletteResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
+                 let pageColors: ColorInfo[] = [];
+                 try {
+                    pageColors = JSON.parse(paletteText).colors;
+                    if (langKey === 'tr') { pageColors = pageColors.map(c => ({...c, name: transliterateTurkish(c.name)})); }
+                 } catch (e) { console.error("Palette parse error", e); }
+
+                 generatedPages.push({
+                     imageUrl: `data:image/png;base64,${pageImageBase64}`,
+                     title: idea,
+                     description: `${s.pageTitle} ${i + 1}`,
+                     colorPalette: pageColors,
+                 });
+             }
+             
+             return generatedPages;
+        }
+
+        const generateCreativePages = async () => {
+            let currentSteps = 0;
+            const generatedPages: ColoringPage[] = [];
+            const langKey = language;
+            const detectedLanguage = langKey === 'tr' ? 'Turkish' : 'English';
+
+            // Step 1: Generate Ideas with Gemini 2.5 Flash (Faster)
+            setStatusText(s.generatingIdeas);
+            const ideasResponse = await ai.models.generateContent({
+                model: logicModel,
+                contents: `Generate a list of ${pageCount} simple, visual ideas for a coloring book. Theme: "${theme}". Audience: ${age}yo. Lang: ${detectedLanguage}. Return JSON key "ideas" with array of strings.`,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: { type: Type.OBJECT, properties: { ideas: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['ideas'] }
+                }
+            });
+            updateProgress(++currentSteps);
+            const responseText = ideasResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
+            const pageIdeas: string[] = JSON.parse(responseText).ideas;
+
+            // Step 2: Character Profile (Fast)
+            setStatusText(s.generatingCharacter);
+            const characterResponse = await ai.models.generateContent({
+                model: logicModel,
+                contents: `Short visual description of main character for coloring book. Theme: "${theme}". Name: "${name}". Cute, simple line art style. Max 15 words.`,
+            });
+            updateProgress(++currentSteps);
+            const characterProfile = characterResponse.text.trim();
+
+            // Step 3: Cover Page
+            setStatusText(s.designingCover);
+            
+            // COVER PROMPT: Colorful, with Flag if Turkish
+            const flagPrompt = langKey === 'tr' ? 'Include a waving Turkish flag in the background.' : '';
+            
+            // Prepare text for AI (Transliterated)
+            const safeName = transliterateTurkish(name);
+            const safeTitle = s.coverTitle; 
+            const safeSubtitle = s.coverSubtitle(safeName);
+
+            const coverPrompt = `Create a cover page illustration. 
+Theme: "${theme}". 
+Character Reference: ${characterProfile}.
+Style: High quality, vibrant, colorful, digital art style (Pixar-esque). 
+Constraint: Full Color. 
+Instructions:
+1. Render the text "${safeTitle}" boldly at the top of the image.
+2. Render the text "${safeSubtitle}" clearly at the bottom.
+3. Ensure spelling is exact.
+4. IMPORTANT: Keep all text away from the very edges of the image to prevent cutting. Center the composition.
+${flagPrompt}`;
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            const coverImageBase64 = await generateImageWithRetry(
+                imageModel, 
+                coverPrompt, 
+                { 
+                    responseModalities: [Modality.IMAGE],
+                    imageConfig: { aspectRatio: '3:4' } // Portrait for A4
+                }
+            );
+            
+            addLivePreview(coverImageBase64);
+            updateProgress(++currentSteps);
+            
+            generatedPages.push({
+                imageUrl: `data:image/png;base64,${coverImageBase64}`,
+                title: s.coverPageTitle,
+                description: `${name}'s ${theme} Adventure`,
+            });
+
+            // Step 4: Coloring Pages Loop
+            for (let i = 0; i < pageCount; i++) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                const idea = pageIdeas[i % pageIdeas.length] || `${theme} ${i + 1}`;
+                setStatusText(s.drawingPage(idea));
+                
+                const storyPrompt = canWrite 
+                    ? `At the bottom of the page, include 3-4 simple, straight horizontal lines (like notebook paper) for the child to write a story. Do NOT add text labels like "Name" or "Date". Just blank lines.` 
+                    : '';
+                
+                const pagePrompt = `Create a coloring book page.
+Scene: ${idea}.
+Character: ${characterProfile}.
+Style: Simple, thick outlines.
+Constraint: Pure black ink on white paper only. NO shading.
+${storyPrompt}`;
+                
+                const pageImageBase64 = await generateImageWithRetry(imageModel, pagePrompt, {
+                    responseModalities: [Modality.IMAGE]
+                });
+                
+                addLivePreview(pageImageBase64);
+                updateProgress(++currentSteps);
+
+                setStatusText(s.pickingColors(idea));
+                const paletteResponse = await ai.models.generateContent({
+                    model: logicModel, 
+                    contents: { parts: [{ inlineData: { mimeType: 'image/png', data: pageImageBase64 } }, { text: `Suggest 5 colors. JSON: { "colors": [{ "hex": "#...", "name": "..." }] }. Translate to ${detectedLanguage}.` }] },
+                    config: { responseMimeType: "application/json", responseSchema: { type: Type.OBJECT, properties: { colors: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { hex: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['hex', 'name'] } } }, required: ['colors'] } }
                 });
                 updateProgress(++currentSteps);
-                
-                const responseText = ideasResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
-                const pageIdeas: string[] = JSON.parse(responseText).ideas;
-
-                // Step 2: Generate Cover Page
-                setStatusText(s.designingCover);
-                const flagPrompt = langKey === 'tr' ? "Subtly incorporate a small, illustrated, wavy Turkish flag into the design. It should feel like part of the drawing, not a sticker, and should not be in a rigid rectangular shape." : "";
-                
-                const coverTitleText = transliterateTurkish(s.coverTitle);
-                const coverSubtitleText = transliterateTurkish(s.coverSubtitle);
-                const coverName = transliterateTurkish(name);
-
-                const coverPrompt = `Create a cover page for a coloring book for a child named '${name}'.
-The main title must be written EXACTLY as: "${coverTitleText}". Do not change the spelling or wording.
-The subtitle must be written EXACTLY as: "${coverSubtitleText}, ${coverName}!". Make sure to include the name '${coverName}' and the comma. Do not change the spelling.
-The theme for the imagery is "${theme}". The user's language is ${detectedLanguage}, please interpret the theme culturally and linguistically appropriately. The imagery should be colorful, vibrant, whimsical, and inviting.
-${flagPrompt}
-The design should be fun and engaging for children. The text must be beautifully integrated into the overall design. Render the text clearly and without spelling errors.`;
-
-                const coverImageBase64 = await generateImageWithRetry(
-                    highQualityImageModel, 
-                    coverPrompt, 
-                    { responseModalities: [Modality.IMAGE] }
-                );
-                updateProgress(++currentSteps);
-
-                if (!coverImageBase64) throw new Error("Cover image generation failed after retries.");
+                const paletteText = paletteResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
+                let pageColors: ColorInfo[] = [];
+                try {
+                     pageColors = JSON.parse(paletteText).colors;
+                     // Transliterate Turkish characters for PDF safety
+                     if (langKey === 'tr') { pageColors = pageColors.map(color => ({ ...color, name: transliterateTurkish(color.name) })); }
+                } catch (e) { console.error("Palette parse error", e); }
 
                 generatedPages.push({
-                    imageUrl: `data:image/png;base64,${coverImageBase64}`,
-                    title: s.coverPageTitle,
-                    description: `${name}'s ${theme} Adventure`,
+                    imageUrl: `data:image/png;base64,${pageImageBase64}`,
+                    title: `${idea}`,
+                    description: `${s.pageTitle} ${i + 1}`,
+                    colorPalette: pageColors,
                 });
-
-
-                // Step 3: Generate Coloring Pages
-                for (let i = 0; i < pageCount; i++) {
-                    const idea = pageIdeas[i % pageIdeas.length] || `${theme} ${i + 1}`;
-                    setStatusText(s.drawingPage(idea));
-                    
-                    const storyPrompt = canWrite ? `At the bottom of the page, include a simple, empty, lined area for the child to write. Above the lines, add a title written EXACTLY as: "${s.writingPrompt}". Do not change the spelling or wording of this title.` : '';
-                    const personalizationPrompt = `Also, subtly and creatively incorporate the child's name, '${name}', into the illustration itself. For example, it could be written in the clouds, on a toy block, or carved on a tree. It should be part of the scene to be colored.`;
-                    const pagePrompt = `Create a coloring book page for a child aged ${age}. It should be a simple, clean, black and white line drawing of: "${idea}". This page is part of a book with the overall theme "${theme}" (user language: ${detectedLanguage}). The style should be fun, easy to color, with no shading, no text (except for the story title if requested), thick outlines, and a white background. ${personalizationPrompt} ${storyPrompt}`;
-                    
-                    const pageImageModel = i % 2 === 0 ? standardImageModel : highQualityImageModel;
-
-                    const pageImageConfig = {
-                        responseModalities: pageImageModel === standardImageModel
-                            ? [Modality.TEXT, Modality.IMAGE]
-                            : [Modality.IMAGE]
-                    };
-
-                    const pageImageBase64 = await generateImageWithRetry(
-                        pageImageModel,
-                        pagePrompt,
-                        pageImageConfig
-                    );
-                    updateProgress(++currentSteps);
-
-                    if (!pageImageBase64) {
-                        console.warn(`Image generation failed for page ${i+1} after retries. Skipping.`);
-                        currentSteps++; 
-                        updateProgress(currentSteps);
-                        continue;
-                    }
-
-                    // Step 4: Generate Color Palette for the page
-                    setStatusText(s.pickingColors(idea));
-                    const palettePrompt = `Based on this coloring page of a "${idea}", suggest a 5-color palette for a child. Return a JSON object with a key "colors" containing an array of objects. Each object must have "hex" (hex code) and "name". The "name" MUST be accurately translated into ${detectedLanguage}. For Turkish, you MUST use the correct Turkish characters (e.g., 'ı', 'ğ', 'ü', 'ş', 'ö', 'ç'). Do NOT replace them with other characters. The spelling MUST be perfect.`;
-                    const paletteResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: {
-                            parts: [
-                                { inlineData: { mimeType: 'image/png', data: pageImageBase64 } },
-                                { text: palettePrompt }
-                            ]
-                        },
-                        config: {
-                            responseMimeType: "application/json",
-                            responseSchema: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    colors: {
-                                        type: Type.ARRAY,
-                                        items: {
-                                            type: Type.OBJECT,
-                                            properties: {
-                                                hex: { type: Type.STRING },
-                                                name: { type: Type.STRING }
-                                            },
-                                            required: ['hex', 'name']
-                                        }
-                                    }
-                                },
-                                required: ['colors']
-                            }
-                        }
-                    });
-                    updateProgress(++currentSteps);
-                    const paletteText = paletteResponse.text.trim().replace(/^```json\s*/, '').replace(/```$/, '');
-                    let pageColors: ColorInfo[] = JSON.parse(paletteText).colors;
-
-                    if (langKey === 'tr') {
-                        pageColors = pageColors.map(color => ({
-                            ...color,
-                            name: transliterateTurkish(color.name)
-                        }));
-                    }
-
-                    generatedPages.push({
-                        imageUrl: `data:image/png;base64,${pageImageBase64}`,
-                        title: `${idea}`,
-                        description: `${s.pageTitle} ${i + 1}`,
-                        colorPalette: pageColors,
-                    });
+            }
+            return generatedPages;
+        };
+        
+        const runGeneration = async () => {
+            try {
+                let pages: ColoringPage[];
+                if (specialTheme) {
+                    pages = await generateEducationalPages();
+                } else {
+                    pages = await generateCreativePages();
                 }
-
-                onComplete(generatedPages);
-
+                onComplete(pages);
             } catch (error) {
                 console.error("Error during page generation:", error);
-                let errorMessage = "An error occurred while creating your coloring book. Please try again.";
+                let errorMessage = "An error occurred. Please try again.";
                 if (error instanceof Error) {
-                    if (error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('429')) {
-                        errorMessage = s.rateLimitError;
-                    } else if (error.message.includes('"code":500') || error.message.includes('INTERNAL')) {
-                        errorMessage = s.internalError;
-                    } else {
-                        errorMessage = `Error during page generation:\n${error.message}`;
-                    }
+                     errorMessage = `Error: ${error.message}`;
                 }
                 alert(errorMessage);
                 window.location.reload();
             }
         };
 
-        generatePages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        runGeneration();
+    }, [age, canWrite, language, name, onComplete, pageCount, specialTheme, specialThemeDetail, theme]);
 
     return (
-        <div className="flex flex-1 flex-col items-center justify-center text-center p-4">
-            <header aria-label="Sayfa Başlığı" className="absolute top-0 left-0 right-0 z-20 p-4">
-                <div className="flex items-center justify-center p-2">
-                    <div className="rounded-full bg-white/50 dark:bg-black/20 backdrop-blur-sm px-4 py-2">
-                        <p aria-live="polite" className="font-medium text-text-light dark:text-text-dark text-sm" role="status">
-                            <span className="font-bold">2/3</span> {s.stepLabel}
-                        </p>
-                    </div>
+        <div className="flex flex-1 flex-col items-center justify-center p-4 w-full max-w-5xl mx-auto">
+            <header className="w-full flex justify-center mb-8">
+                <div className="rounded-full bg-white/50 dark:bg-black/20 backdrop-blur-sm px-6 py-2 border border-slate-200 dark:border-slate-700">
+                    <p className="font-bold text-slate-800 dark:text-slate-200 text-sm">
+                        2/3 {s.stepLabel}
+                    </p>
                 </div>
             </header>
-            <main className="flex flex-col items-center gap-6">
-                <h1 className="font-display text-4xl font-black text-slate-900 dark:text-white sm:text-5xl">
-                    {s.generatingTitle(name, theme)}
-                </h1>
-                <div className="relative w-full max-w-md">
-                    <div className="h-4 w-full rounded-full bg-slate-200 dark:bg-slate-700">
+
+            <div className="w-full flex flex-col items-center gap-8">
+                <div className="text-center space-y-2">
+                    <h1 className="font-display text-3xl sm:text-4xl font-black text-slate-900 dark:text-white">
+                        {s.generatingTitle(name, theme)}
+                    </h1>
+                    <p className="text-slate-500 dark:text-slate-400 animate-pulse font-medium">
+                        {statusText}
+                    </p>
+                </div>
+
+                <div className="w-full max-w-xl">
+                    <div className="h-3 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
                         <div
-                            className="h-4 rounded-full bg-primary transition-all duration-500 ease-in-out"
+                            className="h-full bg-primary transition-all duration-500 ease-out shadow-[0_0_10px_rgba(56,189,248,0.5)]"
                             style={{ width: `${progress}%` }}
                         ></div>
                     </div>
-                    <p className="absolute -top-6 right-0 text-sm font-medium text-slate-600 dark:text-slate-400">
-                        {stepsCompleted} / {totalSteps} {language === 'tr' ? 'adım' : 'steps'}
-                    </p>
-                </div>
-                <p className="text-slate-500 dark:text-slate-400 h-6">
-                    {statusText}
-                </p>
-                <div className="text-6xl text-accent animate-bounce">
-                    <span className="material-symbols-outlined">palette</span>
-                </div>
-                 <div className="relative w-64 h-8 overflow-hidden mt-4">
-                    <div className="absolute inset-0 flex items-center justify-center gap-4">
-                        <span className="material-symbols-outlined text-4xl text-slate-400 dark:text-slate-500 animate-page-fly">auto_draw_solid</span>
-                        <span className="material-symbols-outlined text-4xl text-slate-400 dark:text-slate-500 animate-page-fly animation-delay-200">auto_draw_solid</span>
-                        <span className="material-symbols-outlined text-4xl text-slate-400 dark:text-slate-500 animate-page-fly animation-delay-400">auto_draw_solid</span>
+                    <div className="flex justify-between mt-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <span>Start</span>
+                        <span>{Math.round(progress)}%</span>
                     </div>
                 </div>
-            </main>
+
+                <div className="w-full mt-8">
+                    <div className="flex items-center gap-2 mb-4">
+                        <span className="relative flex h-3 w-3">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                        </span>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">{s.livePreview}</h3>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                        {livePreviewImages.map((img, idx) => (
+                            <div key={idx} className="aspect-[3/4] rounded-lg border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm animate-in fade-in zoom-in duration-500">
+                                <img src={img} alt={`Preview ${idx}`} className="w-full h-full object-cover" />
+                            </div>
+                        ))}
+                        {livePreviewImages.length < (pageCount + 1) && (
+                             <div className="aspect-[3/4] rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-center">
+                                <span className="material-symbols-outlined text-slate-300 dark:text-slate-600 text-3xl animate-bounce">auto_draw_solid</span>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 };

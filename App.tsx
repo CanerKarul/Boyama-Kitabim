@@ -62,6 +62,8 @@ const App: React.FC = () => {
             canWrite={generationData?.canWrite || false}
             onComplete={handleGenerationComplete}
             language={language}
+            specialTheme={generationData?.specialTheme}
+            specialThemeDetail={generationData?.specialThemeDetail}
           />
         );
       case AppScreen.Preview:
